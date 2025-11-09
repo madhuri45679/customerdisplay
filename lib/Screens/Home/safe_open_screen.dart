@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
 import 'package:pinaka_pos/Screens/Auth/login_screen.dart';
 import 'package:pinaka_pos/Screens/Home/fast_key_screen.dart';
 import 'package:provider/provider.dart';
@@ -18,6 +19,7 @@ import '../../Helper/Extentions/theme_notifier.dart';
 import '../../Helper/api_response.dart';
 import '../../Models/Assets/asset_model.dart';
 import '../../Models/Auth/shift_model.dart';
+import '../../Models/Search/product_search_model.dart';
 import '../../Preferences/pinaka_preferences.dart';
 import '../../Repositories/Auth/logout_repository.dart';
 import '../../Repositories/Auth/shift_repository.dart';
@@ -806,13 +808,107 @@ class _SafeOpenScreenState extends State<SafeOpenScreen> with LayoutSelectionMix
                                                       }
 
                                                       // Cancel subscription after dialog is handled
-                                                      await _shiftSubscription
-                                                          ?.cancel(); // Build #1.0.70
-                                                      Navigator.push(
+                                                      // await _shiftSubscription
+                                                      //     ?.cancel(); // Build #1.0.70
+                                                      // Navigator.push(
+                                                      //     context,
+                                                      //     MaterialPageRoute(
+                                                      //         builder: (context) =>
+                                                      //             FastKeyScreen()));
+
+                                                      await _shiftSubscription?.cancel(); // Build #1.0.70
+                                                      debugPrint("🟡 Shift subscription cancelled.");
+
+// Step 1: Show loading dialog
+                                                      showDialog(
+                                                        context: context,
+                                                        barrierDismissible: false,
+                                                        builder: (context) => const Center(
+                                                          child: CircularProgressIndicator(),
+                                                        ),
+                                                      );
+
+                                                      try {
+                                                        // Step 2: Ensure Hive is ready and open the box
+                                                        debugPrint("📦 Checking if 'productCache' box is open...");
+                                                        if (!Hive.isBoxOpen('productCache')) {
+                                                          debugPrint("📂 Opening Hive box: productCache");
+                                                          await Hive.openBox('productCache');
+                                                        } else {
+                                                          debugPrint("✅ Hive box 'productCache' already open.");
+                                                        }
+
+                                                        final box = Hive.box('productCache');
+                                                        debugPrint("📦 Hive box loaded successfully. Total keys: ${box.length}");
+
+                                                        final List<ProductResponse> products = [];
+
+                                                        // Step 3: Load all products from Hive
+                                                        debugPrint("🔍 Reading products from Hive...");
+                                                        for (var i = 0; i < box.values.length; i++) {
+                                                          final item = box.getAt(i);
+                                                          debugPrint("🧩 Item #$i → Type: ${item.runtimeType}");
+
+                                                          if (item is ProductResponse) {
+                                                            products.add(item);
+                                                            continue;
+                                                          }
+
+                                                          if (item is Map) {
+                                                            // ✅ Deep normalize all map keys (fixes _Map<dynamic, dynamic>)
+                                                            // ✅ Deep normalize all map keys (fixes _Map<dynamic, dynamic>)
+                                                            dynamic deepNormalize(dynamic data) {
+                                                              if (data is Map) {
+                                                                return data.map(
+                                                                      (key, value) => MapEntry(key.toString(), deepNormalize(value)),
+                                                                );
+                                                              } else if (data is List) {
+                                                                return data.map((e) => deepNormalize(e)).toList();
+                                                              } else {
+                                                                return data;
+                                                              }
+                                                            }
+
+
+                                                            final normalized = deepNormalize(item);
+                                                            debugPrint("🧠 Deep normalized Hive item #$i");
+
+                                                            final product = ProductResponse.fromJson(
+                                                              Map<String, dynamic>.from(normalized),
+                                                            );
+
+                                                            products.add(product);
+                                                          } else {
+                                                            debugPrint("⚠️ Unknown item type in Hive: ${item.runtimeType}");
+                                                          }
+                                                        }
+
+                                                        debugPrint("✅ Successfully loaded ${products.length} products from Hive.");
+
+                                                        // Step 4: Close loading dialog
+                                                        Navigator.pop(context);
+                                                        debugPrint("🟢 Loader closed.");
+
+                                                        // Step 5: Navigate to FastKeyScreen with loaded products
+                                                        debugPrint("🚀 Navigating to FastKeyScreen...");
+                                                        Navigator.push(
                                                           context,
                                                           MaterialPageRoute(
-                                                              builder: (context) =>
-                                                                  FastKeyScreen()));
+                                                            builder: (context) => FastKeyScreen(),
+                                                          ),
+                                                        );
+                                                        debugPrint("✅ Navigation successful.");
+
+                                                      } catch (e, stack) {
+                                                        Navigator.pop(context);
+                                                        debugPrint("❌ Error while loading Hive data: $e");
+                                                        debugPrintStack(label: 'Hive Load StackTrace', stackTrace: stack);
+
+                                                        ScaffoldMessenger.of(context).showSnackBar(
+                                                          SnackBar(content: Text('Failed to load products from Hive: $e')),
+                                                        );
+                                                      }
+
                                                     }
                                                   } else {
                                                     if (response.status ==
