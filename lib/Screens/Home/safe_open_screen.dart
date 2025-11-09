@@ -23,6 +23,7 @@ import '../../Models/Search/product_search_model.dart';
 import '../../Preferences/pinaka_preferences.dart';
 import '../../Repositories/Auth/logout_repository.dart';
 import '../../Repositories/Auth/shift_repository.dart';
+import '../../Repositories/Search/product_search_repository.dart';
 import '../../Widgets/widget_age_verification_popup_dialog.dart';
 import '../../Widgets/widget_alert_popup_dialogs.dart';
 import '../../Widgets/widget_topbar.dart';
@@ -816,7 +817,7 @@ class _SafeOpenScreenState extends State<SafeOpenScreen> with LayoutSelectionMix
                                                       //         builder: (context) =>
                                                       //             FastKeyScreen()));
 
-                                                      await _shiftSubscription?.cancel(); // Build #1.0.70
+                                                      await _shiftSubscription?.cancel();
                                                       debugPrint("🟡 [SHIFT] Shift subscription cancelled.");
 
 // Step 1️⃣: Show loading dialog
@@ -872,12 +873,8 @@ class _SafeOpenScreenState extends State<SafeOpenScreen> with LayoutSelectionMix
                                                               // Recursive deep normalization function
                                                               dynamic deepNormalize(dynamic data) {
                                                                 if (data is Map) {
-                                                                  debugPrint("🔧 [NORMALIZE] Normalizing Map with ${data.length} keys.");
-                                                                  return data.map(
-                                                                        (key, value) => MapEntry(key.toString(), deepNormalize(value)),
-                                                                  );
+                                                                  return data.map((key, value) => MapEntry(key.toString(), deepNormalize(value)));
                                                                 } else if (data is List) {
-                                                                  debugPrint("🔧 [NORMALIZE] Normalizing List with ${data.length} elements.");
                                                                   return data.map((e) => deepNormalize(e)).toList();
                                                                 } else {
                                                                   return data;
@@ -914,31 +911,65 @@ class _SafeOpenScreenState extends State<SafeOpenScreen> with LayoutSelectionMix
                                                         debugPrint("   → Failed: $failedCount");
                                                         debugPrint("---------------------------------------------------------------");
 
-                                                        // Step 4️⃣: Close loading dialog
+                                                        // Step 4️⃣: Fallback - Fetch from API if Hive data is empty
+                                                        if (products.isEmpty) {
+                                                          debugPrint("⚠️ [CACHE MISS] Hive cache is empty. Fetching products from API...");
+
+                                                          try {
+                                                            final apiProducts = await ProductRepository().fetchProducts(); // 🔹 Replace with your API function
+
+                                                            if (apiProducts.isNotEmpty) {
+                                                              debugPrint("✅ [API] ${apiProducts.length} products fetched successfully.");
+                                                              products.addAll(apiProducts);
+
+                                                              // Update Hive cache
+                                                              await box.clear();
+                                                              for (final p in apiProducts) {
+                                                                await box.add(p.toJson()); // Ensure ProductResponse has .toJson()
+                                                              }
+                                                              debugPrint("💾 [HIVE] Cache updated with fresh API data.");
+                                                            } else {
+                                                              debugPrint("⚠️ [API] No products returned from the server.");
+                                                            }
+                                                          } catch (apiError, st) {
+                                                            debugPrint("❌ [API ERROR] Failed to fetch products from API: $apiError");
+                                                            debugPrintStack(stackTrace: st);
+                                                          }
+                                                        }
+
+                                                        // Step 5️⃣: Close loading dialog
+                                                        if (!context.mounted) return;
                                                         Navigator.pop(context);
                                                         debugPrint("🟢 [UI] Loader dialog closed.");
 
-                                                        // Step 5️⃣: Navigate to FastKeyScreen with loaded products
-                                                        debugPrint("🚀 [NAV] Navigating to FastKeyScreen...");
+                                                        // Step 6️⃣: Navigate to FastKeyScreen with loaded products
+                                                        if (products.isEmpty) {
+                                                          debugPrint("❌ [NAV] No products available from Hive or API.");
+                                                          ScaffoldMessenger.of(context).showSnackBar(
+                                                            const SnackBar(content: Text("No products available from cache or server.")),
+                                                          );
+                                                          return;
+                                                        }
+
+                                                        debugPrint("🚀 [NAV] Navigating to FastKeyScreen with ${products.length} products...");
                                                         Navigator.push(
                                                           context,
                                                           MaterialPageRoute(
                                                             builder: (context) => FastKeyScreen(),
                                                           ),
                                                         );
-                                                        debugPrint("✅ [NAV] Navigation successful. Sent ${products.length} products to FastKeyScreen.");
+                                                        debugPrint("✅ [NAV] Navigation successful.");
 
                                                       } catch (e, stack) {
-                                                        // Step 6️⃣: Handle any top-level error gracefully
+                                                        // Step 7️⃣: Handle any top-level error gracefully
                                                         Navigator.pop(context);
                                                         debugPrint("❌ [HIVE] Fatal error while loading products: $e");
                                                         debugPrintStack(label: "💥 Hive Load StackTrace", stackTrace: stack);
 
                                                         ScaffoldMessenger.of(context).showSnackBar(
-                                                          SnackBar(content: Text('Failed to load products from Hive: $e')),
+                                                          SnackBar(content: Text('Failed to load products: $e')),
                                                         );
                                                       }
-
 
                                                     }
                                                   } else {
