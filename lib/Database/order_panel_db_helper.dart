@@ -1139,6 +1139,7 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
         double? salesPrice,
         double? regularPrice,
         double? unitPrice,
+        bool? isAgeVerified,
       }) async {
     final key = '$orderId-$productId-$variationId';
 
@@ -1200,10 +1201,17 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
           'sales_price': salesPrice,
           'regular_price': regularPrice,
           'unit_price': unitPrice,
+          // bool? isAgeVerified,
         });
 
         if (kDebugMode) print("🆕 Added new product: $name");
       }
+      // ✅ Mark order as age verified in Hive (for persistence)
+      final updatedOrder = {
+        ...order,
+        'products': products,
+        if (isAgeVerified != null) 'age_verified': isAgeVerified,
+      };
 
       await box.put(orderId.toString(), {...order, 'products': products});
 
@@ -1216,6 +1224,66 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
       _activeAdds.remove(key); // ✅ unlock after done
     }
   }
+
+  Future<void> updateOrderField(int orderId, String fieldKey, dynamic value) async {
+    try {
+      // ✅ Update local SQLite database
+      final db = await DBHelper.instance.database;
+
+      final existingOrders = await db.query(
+        AppDBConst.orderTable,
+        where: '${AppDBConst.orderServerId} = ?',
+        whereArgs: [orderId],
+      );
+
+      if (existingOrders.isNotEmpty) {
+        // 🧱 Update only the specific field in SQLite
+        await db.update(
+          AppDBConst.orderTable,
+          {fieldKey: value},
+          where: '${AppDBConst.orderServerId} = ?',
+          whereArgs: [orderId],
+        );
+
+        if (kDebugMode) {
+          print("✅ updateOrderField → Updated $fieldKey = $value for Order ID: $orderId");
+        }
+
+        // ✅ Also update in-memory list (if maintained)
+        final orderIndex = orders.indexWhere(
+              (order) => order[AppDBConst.orderServerId] == orderId,
+        );
+        if (orderIndex != -1) {
+          orders[orderIndex][fieldKey] = value;
+        }
+
+        // ✅ Update Hive (offlineOrders box)
+        final hiveBox = Hive.box('offlineOrders');
+        final orderKey = orderId.toString();
+        final existingHiveOrder = hiveBox.get(orderKey);
+
+        if (existingHiveOrder != null) {
+          final updatedOrder = {
+            ...existingHiveOrder,
+            fieldKey: value,
+          };
+          await hiveBox.put(orderKey, updatedOrder);
+          if (kDebugMode) {
+            print("💾 Hive updated → $fieldKey = $value for Order #$orderId");
+          }
+        }
+      } else {
+        if (kDebugMode) {
+          print("⚠️ updateOrderField: Order ID $orderId not found in orderTable.");
+        }
+      }
+    } catch (e, s) {
+      if (kDebugMode) {
+        print("❌ updateOrderField failed: $e\n$s");
+      }
+    }
+  }
+
 
 
   @Deprecated("Removed from current version, please use Rest API to update")

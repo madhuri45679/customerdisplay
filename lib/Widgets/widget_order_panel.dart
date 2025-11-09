@@ -987,6 +987,57 @@ class _RightOrderPanelState extends State<RightOrderPanel> with TickerProviderSt
               return;
             }
 
+            // 🚨 AGE VERIFICATION CHECK (only once per order)
+            try {
+              // Find active order
+              final order = orderHelper.orders.firstWhere(
+                    (order) => order[AppDBConst.orderServerId] == activeOrderId,
+                orElse: () => {},
+              );
+
+              final String ageRestrictedValue = order[AppDBConst.orderAgeRestricted]?.toString() ?? 'false';
+              final bool isOrderAlreadyVerified =
+                  ageRestrictedValue.toLowerCase() == 'true' || ageRestrictedValue == '1';
+
+              if (!isOrderAlreadyVerified) {
+                final ageVerificationProvider = AgeVerificationProvider();
+                final bool isVerified =
+                await ageVerificationProvider.ageRestrictedProduct(context, product);
+
+                if (!isVerified) {
+                  _isLoading = false;
+                  setState(() {});
+                  if (kDebugMode) print("🚫 Age verification failed or cancelled for product: $productName");
+                  _scaffoldMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text("❌ Age verification failed for $productName."),
+                      backgroundColor: Colors.red,
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                  return; // ❌ Stop further processing
+                }
+
+                // ✅ Mark this order as verified
+                order[AppDBConst.orderAgeRestricted] = true;
+                await orderHelper.updateOrderField(
+                  activeOrderId,
+                  AppDBConst.orderAgeRestricted,
+                  true,
+                );
+
+                if (kDebugMode) {
+                  print("✅ Age verification completed once for Order #$activeOrderId");
+                }
+              } else {
+                if (kDebugMode) {
+                  print("🟢 Skipping age verification — already verified for Order #$activeOrderId");
+                }
+              }
+            } catch (e) {
+              if (kDebugMode) print("⚠️ Age verification check failed: $e");
+            }
+
             // ✅ 6️⃣ Handle variations offline/online
             if (product.variations.isNotEmpty) {
               final productId = product.id ?? -1;
@@ -994,13 +1045,13 @@ class _RightOrderPanelState extends State<RightOrderPanel> with TickerProviderSt
                 productBloc.fetchProductVariations(productId);
 
                 productBloc.variationStream.listen((variationResponse) {
-                  if (variationResponse.status == Status.COMPLETED && variationResponse.data!.isNotEmpty) {
+                  if (variationResponse.status == Status.COMPLETED &&
+                      variationResponse.data!.isNotEmpty) {
                     final variations = variationResponse.data!;
                     VariationPopup(
                       productId,
                       productName,
                       orderHelper,
-                      //variations: variations,
                       onProductSelected: ({required bool isVariant}) async {
                         Navigator.pop(context);
                         await fetchOrderItems();
@@ -1032,7 +1083,8 @@ class _RightOrderPanelState extends State<RightOrderPanel> with TickerProviderSt
               productId: product.id ?? -1,
               variationId: -1,
               onItemAdded: () {
-                if (kDebugMode) print("🟢 ${foundOffline ? 'Offline' : 'Online'} product added: $productName");
+                if (kDebugMode)
+                  print("🟢 ${foundOffline ? 'Offline' : 'Online'} product added: $productName");
                 _scaffoldMessenger.showSnackBar(
                   SnackBar(
                     content: Text(foundOffline
@@ -1060,6 +1112,8 @@ class _RightOrderPanelState extends State<RightOrderPanel> with TickerProviderSt
             );
           }
         },
+
+
         child: Stack(
           children: [
             // 🔹 Main Order Panel (Card + Tabs)
