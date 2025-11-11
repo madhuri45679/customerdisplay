@@ -157,6 +157,8 @@ class AppDBConst { // Build #1.0.10 - Naveen: Updated DB tables constants
   static const String baseUrl = 'base_url';
   static const String currency = 'currency';
   static const String currencySymbol = 'currency_symbol';
+
+  // static String orderItemsTable;
 }
 
 class DBHelper {

@@ -817,6 +817,9 @@ class _SafeOpenScreenState extends State<SafeOpenScreen> with LayoutSelectionMix
                                                       //         builder: (context) =>
                                                       //             FastKeyScreen()));
 
+                                                      // final trimmedBarcode = barcode.trim();
+
+
                                                       await _shiftSubscription?.cancel();
                                                       debugPrint("🟡 [SHIFT] Shift subscription cancelled.");
 
@@ -931,7 +934,8 @@ class _SafeOpenScreenState extends State<SafeOpenScreen> with LayoutSelectionMix
                                                             } else {
                                                               debugPrint("⚠️ [API] No products returned from the server.");
                                                             }
-                                                          } catch (apiError, st) {
+                                                          }
+                                                          catch (apiError, st) {
                                                             debugPrint("❌ [API ERROR] Failed to fetch products from API: $apiError");
                                                             debugPrintStack(stackTrace: st);
                                                           }

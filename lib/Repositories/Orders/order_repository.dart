@@ -56,6 +56,7 @@ class OrderRepository {  // Build #1.0.25 - added by naveen
       'created_at': DateTime.now().toIso8601String(),
       'synced': false,
       'products': [],
+      'orderAgeRestricted': false,
     };
 
     await box.put(newOrderId.toString(), localOrder);

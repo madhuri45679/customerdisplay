@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import '../Constants/text.dart';
 import '../Helper/api_response.dart';
+import '../Models/Category/category_product_model.dart';
 import '../Models/Orders/get_orders_model.dart' as model;
 import 'db_helper.dart';
 
@@ -28,6 +29,9 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
   static final OrderHelper _instance = OrderHelper._internal(); // Singleton instance to ensure only one instance of OrderHelper exists
   factory OrderHelper() => _instance;
   static bool isOrderPanelLoaded = false;
+  /// Keeps track of which orders have already passed age verification during session
+  Map<int, bool> orderAgeVerifiedFlags = {};
+
 
   int? activeOrderId; // Stores the currently active order ID
   int? activeUserId; // Stores the active user ID
@@ -948,40 +952,66 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
   }
 
   // Creates a new order and sets it as active
-  Future<int> createOrder({int? serverOrderId}) async { // Build #1.0.11 : updated
-    ///check if 'orderServerId' is 0 or not, if yes show alert
+  Future<int> createOrder({int? serverOrderId}) async {
     final db = await DBHelper.instance.database;
+
+    // 🔹 Set active order
     activeOrderId = serverOrderId;
+
+    // ✅ Insert a new order (no model objects, no age flag yet)
     await db.insert(AppDBConst.orderTable, {
       AppDBConst.userId: activeUserId ?? 1,
-      if (serverOrderId != null) AppDBConst.orderServerId: serverOrderId, /// server created order id, update after order created at backend
-      AppDBConst.orderTotal: 0.0, /// initially it will be 0
-      AppDBConst.orderStatus: "processing", /// initial value will be 'processing'
+      if (serverOrderId != null)
+        AppDBConst.orderServerId: serverOrderId, // server created order id
+      AppDBConst.orderTotal: 0.0, // initially 0
+      AppDBConst.orderStatus: "processing", // initial status
       AppDBConst.orderType: 'in-store',
-      AppDBConst.orderDate: DateTime.now().toString(), /// update these from order created on server
-      AppDBConst.orderTime: DateTime.now().toString(),
+      AppDBConst.orderDate: DateTime.now().toIso8601String(),
+      AppDBConst.orderTime: DateTime.now().toIso8601String(),
+      // ❌ Do not include AppDBConst.orderAgeRestricted here (set later when verified)
     });
 
-    // Update the user's order count
+    // ✅ Update user order count
     await db.rawUpdate('''
     UPDATE ${AppDBConst.userTable}
     SET ${AppDBConst.userOrderCount} = ${AppDBConst.userOrderCount} + 1
     WHERE ${AppDBConst.userId} = ?
-    ''', [activeUserId ?? 1]);
+  ''', [activeUserId ?? 1]);
 
-    // Save the newly created order ID in shared preferences
+    // ✅ Save active order ID to SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('activeOrderId', activeOrderId!);
 
-    // Refresh the order list
+    // ✅ Refresh in-memory order list
     await loadData();
 
-    if (kDebugMode) {
-      print("#### Order created with ID: $activeOrderId");
+    // ✅ Store clean Hive entry (map only)
+    try {
+      final hiveBox = Hive.box('offlineOrders');
+      final orderKey = activeOrderId.toString();
+
+      final newOrderMap = {
+        AppDBConst.orderServerId: serverOrderId,
+        AppDBConst.orderStatus: "processing",
+        AppDBConst.orderType: 'in-store',
+        AppDBConst.orderDate: DateTime.now().toIso8601String(),
+        AppDBConst.orderTime: DateTime.now().toIso8601String(),
+        AppDBConst.orderTotal: 0.0,
+        // 👇 don't store any Dart objects or model references
+      };
+
+      await hiveBox.put(orderKey, newOrderMap);
+      if (kDebugMode)
+        print("💾 Hive new order stored safely (no model objects) for #$activeOrderId");
+    } catch (e) {
+      if (kDebugMode) print("⚠️ Hive not available or failed: $e");
     }
+
+    if (kDebugMode) print("✅ Order created successfully (ID: $activeOrderId)");
 
     return activeOrderId!;
   }
+
 
   // Deletes an order from the database and updates local storage
   Future<void> deleteOrder(int orderId) async {
@@ -1227,7 +1257,7 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
 
   Future<void> updateOrderField(int orderId, String fieldKey, dynamic value) async {
     try {
-      // ✅ Update local SQLite database
+      // ✅ Update SQLite
       final db = await DBHelper.instance.database;
 
       final existingOrders = await db.query(
@@ -1237,7 +1267,6 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
       );
 
       if (existingOrders.isNotEmpty) {
-        // 🧱 Update only the specific field in SQLite
         await db.update(
           AppDBConst.orderTable,
           {fieldKey: value},
@@ -1246,10 +1275,10 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
         );
 
         if (kDebugMode) {
-          print("✅ updateOrderField → Updated $fieldKey = $value for Order ID: $orderId");
+          print("✅ updateOrderField → Updated $fieldKey = $value for Order #$orderId in SQLite");
         }
 
-        // ✅ Also update in-memory list (if maintained)
+        // ✅ Update in-memory list
         final orderIndex = orders.indexWhere(
               (order) => order[AppDBConst.orderServerId] == orderId,
         );
@@ -1257,32 +1286,83 @@ class OrderHelper { // Build #1.0.10 - Naveen: Added Order Helper to Maintain Or
           orders[orderIndex][fieldKey] = value;
         }
 
-        // ✅ Update Hive (offlineOrders box)
+        // ✅ Update Hive (only JSON-safe data)
         final hiveBox = Hive.box('offlineOrders');
         final orderKey = orderId.toString();
         final existingHiveOrder = hiveBox.get(orderKey);
 
         if (existingHiveOrder != null) {
-          final updatedOrder = {
-            ...existingHiveOrder,
-            fieldKey: value,
-          };
+          final updatedOrder = Map<String, dynamic>.from(existingHiveOrder);
+
+          // ✅ Convert any complex types to JSON-safe before saving
+          updatedOrder[fieldKey] = _convertToJsonSafe(value);
+
           await hiveBox.put(orderKey, updatedOrder);
+
           if (kDebugMode) {
-            print("💾 Hive updated → $fieldKey = $value for Order #$orderId");
+            print("💾 Hive updated safely → $fieldKey = $value for Order #$orderId");
           }
+        } else {
+          if (kDebugMode) print("⚠️ Hive order #$orderId not found");
         }
+
+        // ✅ Refresh in-memory orders
+        await loadData();
+        if (kDebugMode) print("🔄 Orders list refreshed after update.");
       } else {
-        if (kDebugMode) {
-          print("⚠️ updateOrderField: Order ID $orderId not found in orderTable.");
-        }
+        if (kDebugMode)
+          print("⚠️ updateOrderField: Order ID $orderId not found in SQLite.");
       }
     } catch (e, s) {
-      if (kDebugMode) {
-        print("❌ updateOrderField failed: $e\n$s");
-      }
+      if (kDebugMode) print("❌ updateOrderField failed: $e\n$s");
     }
   }
+
+// 🧩 Helper — ensures Hive only stores valid JSON types
+  dynamic _convertToJsonSafe(dynamic value) {
+    if (value == null) return null;
+
+    if (value is Map) {
+      return value.map((k, v) => MapEntry(k.toString(), _convertToJsonSafe(v)));
+    } else if (value is List) {
+      return value.map(_convertToJsonSafe).toList();
+    } else if (value is Tags) {
+      // Convert your model object to a Map before storing
+      return value.toJson();
+    } else {
+      // Primitive (String, int, bool, double) — safe to store
+      return value;
+    }
+  }
+
+
+  Future<bool> orderHasItems(int orderId) async {
+    try {
+      final db = await DBHelper.instance.database;
+
+      // 🧾 Check if the order has any associated items in order_items table
+      final List<Map<String, dynamic>> items = await db.query(
+        AppDBConst.orderTable, // ✅ Replace with your correct order items table name constant
+        where: '${AppDBConst.orderServerId} = ?',
+        whereArgs: [orderId],
+        limit: 1, // Optimization: we only need to know if at least one exists
+      );
+
+      final hasItems = items.isNotEmpty;
+
+      if (kDebugMode) {
+        print("🧾 [ORDER CHECK] Order ID $orderId has items: $hasItems");
+      }
+
+      return hasItems;
+    } catch (e, s) {
+      if (kDebugMode) {
+        print("❌ [orderHasItems] Failed to check items for Order ID $orderId: $e\n$s");
+      }
+      return false;
+    }
+  }
+
 
 
 
